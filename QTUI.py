@@ -8,7 +8,7 @@ import numpy as np
 from RaysidClient import RaysidClientAsync, find_device_by_name
 from RaysidClient import logger as raysid_logger
 
-from QtGUI import Gaussian, fit_gaussian
+from gaussian_fitting import Gaussian, fit_gaussian
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget,
@@ -26,9 +26,6 @@ from matplotlib.figure import Figure
 from matplotlib.widgets import RectangleSelector
 import matplotlib.pyplot as plt
 import logging
-
-import pandas as pd
-imported_data = pd.read_csv("Cyklotron_Cs.csv").to_numpy()
 
 
 # -------------------- UI LOGGER --------------------
@@ -393,7 +390,6 @@ class MainWindow(QMainWindow):
                     str(g)
                 )
                 self.txt_gaussian_info.setPlainText(info)
-                # self.spectrum_canvas.ax.plot(g.values(self.spectrum_data[g.region_limits[0]:g.region_limits[1]]))
             except AttributeError as e:
                 self.txt_gaussian_info.setPlainText(f"Error reading Gaussian: {e}")
 
@@ -459,3 +455,75 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
+    
+    
+# pyinstaller \
+#   --onefile \
+#   --windowed \
+#   --clean \
+#   --strip \
+#   --name linux_binary \
+#   --hidden-import=numba.core.typing \
+#   --hidden-import=numba.core.typing.templates \
+#   --hidden-import=numba.core.datamodel \
+#   --hidden-import=numba.core.compiler \
+#   --hidden-import=numba.core.runtime \
+#   --collect-all numpy \
+#   --collect-all scipy \
+#   --collect-all numba \
+#   --exclude-module numpy.tests \
+#   --exclude-module scipy.tests \
+#   --exclude-module numba.tests \
+#   --exclude-module matplotlib.tests \
+#   --exclude-module matplotlib._tkinter \
+#   --exclude-module matplotlib.backends.backend_agg \
+#   --exclude-module matplotlib.backends.backend_pdf \
+#   --exclude-module matplotlib.backends.backend_ps \
+#   --exclude-module matplotlib.backends.backend_svg \
+#   --exclude-module matplotlib.toolkits.mplot3d \
+#   --exclude-module PySide6.QtWebEngineWidgets \
+#   --exclude-module PySide6.QtWebEngineCore \
+#   --exclude-module PySide6.QtPdf \
+#   --exclude-module PySide6.Qt3DCore \
+#   --exclude-module PySide6.Qt3DRender \
+#   QTUI.py
+
+# pyinstaller \
+#   --windowed \
+#   --clean \
+#   --strip \
+#   --name linux_binary \
+#   --hidden-import=numba.core.typing \
+#   --hidden-import=numba.core.typing.templates \
+#   --hidden-import=numba.core.datamodel \
+#   --hidden-import=numba.core.compiler \
+#   --hidden-import=numba.core.runtime \
+#   --collect-submodules=numba \
+#   --collect-data=numpy \
+#   --collect-data=scipy \
+#   --exclude-module=PySide6.QtWebEngineWidgets \
+#   --exclude-module=PySide6.QtWebEngineCore \
+#   --exclude-module=PySide6.QtPdf \
+#   --exclude-module=PySide6.Qt3DCore \
+#   --exclude-module=PySide6.Qt3DRender \
+#   QTUI.py
+
+
+    
+# pyinstaller ^
+#   --onefile ^
+#   --windowed ^
+#   --clean ^
+#   --name windows_binary ^
+#   --hidden-import=numba.core.typing ^
+#   --hidden-import=numba.core.typing.templates ^
+#   --hidden-import=numba.core.datamodel ^
+#   --hidden-import=numba.core.compiler ^
+#   --hidden-import=numba.core.runtime ^
+#   --hidden-import=scipy.special.cython_special ^
+#   --hidden-import=scipy.linalg.cython_lapack ^
+#   --collect-all numpy ^
+#   --collect-all scipy ^
+#   --collect-all numba ^
+#   GTUI.py
