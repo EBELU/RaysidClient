@@ -462,19 +462,11 @@ if __name__ == "__main__":
 #   --onefile \
 #   --windowed \
 #   --clean \
-#   --strip \
 #   --name linux_binary \
-#   --hidden-import=numba.core.typing \
-#   --hidden-import=numba.core.typing.templates \
-#   --hidden-import=numba.core.datamodel \
-#   --hidden-import=numba.core.compiler \
-#   --hidden-import=numba.core.runtime \
-#   --collect-all numpy \
-#   --collect-all scipy \
-#   --collect-all numba \
+#   --hidden-import numpy \
+#   --hidden-import scipy \
 #   --exclude-module numpy.tests \
 #   --exclude-module scipy.tests \
-#   --exclude-module numba.tests \
 #   --exclude-module matplotlib.tests \
 #   --exclude-module matplotlib._tkinter \
 #   --exclude-module matplotlib.backends.backend_agg \

@@ -1,23 +1,24 @@
 import numpy as np
-from numba import njit, types
+# from numba import njit, types
 
 from .helpers import two_bytes_to_int, three_bytes_to_int, unpack_value
 
-@njit(types.bool(types.uint16), cache=True, inline = "always")
+# @njit(types.bool(types.uint16), cache=True, inline = "always")
 def check_X(X):
-    if X >= 1800:
+    if X >= 1800 or X < 0:
         return 0
     else:
         return 1
 
-@njit(types.bool(types.int16, types.int16, types.int8),cache=True, inline="always")
+
+# @njit(types.bool(types.int16, types.int16, types.int8),cache=True, inline="always")
 def check_pos(data_len, pos, max_incr):
     if pos + max_incr < data_len:
         return True
     else:
         return False
 
-@njit(types.Tuple((types.int8, types.int16, types.int16, types.int32[:], ))(types.uint8[:]), cache = True, boundscheck=True)
+# @njit(boundscheck=True)
 def decode_spectrum_packet(data: np.array):
     """
     Decodes spectrum packets
@@ -28,7 +29,7 @@ def decode_spectrum_packet(data: np.array):
     END_CH      = 2
     SPECTRUM    = 3
     """
-    spectrum = np.zeros(1800, dtype = np.int32)
+    spectrum = np.zeros(1800, dtype = np.float32)
     
     
     recieved_bytes = (len(data))
@@ -37,11 +38,14 @@ def decode_spectrum_packet(data: np.array):
     total_bytes = np.uint16(data[0])
     if total_bytes == 0:
         total_bytes = 256
-    # print(data)
+
+    extra_data = None
     if len(data) > total_bytes + 1:
         # print(bytearray(data[total_bytes + 1:]).hex())
+        extra_data = data[total_bytes + 1:]
         data = data[:total_bytes + 1]
-        # print(bytearray(data[-3:]).hex())
+
+
         
     if len(data) < 7:
         return 1,0,0,spectrum
@@ -60,13 +64,10 @@ def decode_spectrum_packet(data: np.array):
 
 
     X = two_bytes_to_int(data[2], data[3])
-    # print("START CHANNEL", X, "BYTES EXPECTED", excepted_bytes, "RECEIVED BYTES", recieved_bytes)
-    # print(bytearray(data).hex())
     start_X = two_bytes_to_int(data[2], data[3])
-    current_value = np.int64(three_bytes_to_int(data[4], data[5], data[6]))
+    
+    current_value = three_bytes_to_int(data[4], data[5], data[6])
 
-
-    # print("Start ch: " , X)
 
     for i in range(channel_div):
         if not check_X(X): return 2,0,0,spectrum
@@ -75,7 +76,7 @@ def decode_spectrum_packet(data: np.array):
     
     pos = np.int16(7)
     
-    
+
     # Decode loop
     total_new_values = 0
     while pos < (len(data) - 4):
@@ -86,31 +87,6 @@ def decode_spectrum_packet(data: np.array):
             point_type = 4
             point_amount = 1
             
-        # --- Sanity Check ---
-        expected_consumed_bytes = 1
-        if point_type == 0:
-            if point_amount % 2 == 0:
-                expected_consumed_bytes += (point_amount // 2)
-            else:
-                expected_consumed_bytes += (point_amount // 2 + 1)
-        elif point_type == 1:
-            expected_consumed_bytes += point_amount
-        elif point_type == 2:
-            if point_amount % 2 == 0:
-                expected_consumed_bytes += ((point_amount // 2) * 3)
-            else:
-                expected_consumed_bytes += ((point_amount // 2) * 3 + 2)
-        elif point_type == 3:
-            expected_consumed_bytes += (point_amount * 2)
-        elif point_type == 4:
-            expected_consumed_bytes += 3
-            
-        if expected_consumed_bytes + pos > len(data):
-            return 1,0,0,spectrum
-
-        # if X > 1800 or (X + np.int64(point_amount) > 1800):
-        #     print("Returned early")
-        #     return 0,0,spectrum
 
         pos += 1 # Shift after having read the group info
         
@@ -120,6 +96,7 @@ def decode_spectrum_packet(data: np.array):
             amount_same_type = 0
 
             while amount_same_type < point_amount:
+                if not check_pos(data_len, pos, 1): return 3,0,0,spectrum
                 diff = np.int32(data[pos] & 0xFF) // 16
                 if diff > 7: diff -= 16
                 current_value += diff
@@ -134,6 +111,7 @@ def decode_spectrum_packet(data: np.array):
                 amount_same_type += 1
                 
                 if amount_same_type < point_amount:
+                    if not check_pos(data_len, pos, 1): return 3,0,0,spectrum
                     diff =  np.int32(data[pos] & 0xFF) % 16
                     if diff > 7: diff -= 16
                     current_value += diff
@@ -154,6 +132,7 @@ def decode_spectrum_packet(data: np.array):
         elif point_type == 1:
             amount_same_type = 0
             while amount_same_type < point_amount:
+                if not check_pos(data_len, pos, 1): return 3,0,0,spectrum
                 diff =  np.int32(data[pos] & 0xFF)
                 if diff > 127: diff -= 256
                 current_value += diff
@@ -222,7 +201,7 @@ def decode_spectrum_packet(data: np.array):
         # 1 24bit value in 3 bytes
         elif point_type == 4:
             if not check_pos(data_len, pos, 2): return 3,0,0,spectrum
-            diff = three_bytes_to_int(data[pos + 2], data[pos + 1], data[pos])
+            diff = three_bytes_to_int(data[pos + 2], data[pos + 1], data[pos]).astype(np.int32)
             if diff>8388607: diff -= 16777216
             
             current_value += diff
@@ -236,10 +215,9 @@ def decode_spectrum_packet(data: np.array):
                 
             pos += 3
             
-
     return 0,start_X, X, spectrum
 
-@njit(types.Tuple((types.int64, types.float64, types.float64))(types.uint8[:]), cache=True)
+# @njit(types.Tuple((types.int64, types.float64, types.float64))(types.uint8[:]), cache=True)
 def decode_cps_packet(data) -> tuple:
     """
     Decodes CPS packets
@@ -269,26 +247,26 @@ def decode_cps_packet(data) -> tuple:
     else:
         return 2, 0, 0
     
-@njit(types.uint16(types.uint8, types.uint8),inline="always")
+#@njit(types.uint16(types.uint8, types.uint8),inline="always")
 def u16(lo, hi):
-    return (np.uint16(hi) << 8) | np.uint16(lo)
+    return np.uint32(hi) << 8 | np.uint32(lo)
 
-@njit(
-    types.Tuple((
-        types.int64,    # ERR
-        types.int64,    # UART_ERRORS
-        types.int64,    # BATTERY
-        types.float32,  # TEMPERATURE
-        types.boolean,  # TEMP_OK
-        types.boolean,  # CHARGING
-        types.boolean,  # CHANNEL_FULL
-        types.int64,    # CH239
-        types.int64     # AVG_CH239
-    ))(
-        types.uint8[:]
-    ),
-    cache=True
-)
+# @njit(
+#     types.Tuple((
+#         types.int64,    # ERR
+#         types.int64,    # UART_ERRORS
+#         types.int64,    # BATTERY
+#         types.float32,  # TEMPERATURE
+#         types.boolean,  # TEMP_OK
+#         types.boolean,  # CHARGING
+#         types.boolean,  # CHANNEL_FULL
+#         types.int64,    # CH239
+#         types.int64     # AVG_CH239
+#     ))(
+#         types.uint8[:]
+#     ),
+#     cache=True
+# )
 def decode_status_packet(data) -> tuple:
     """ 
     Decodes status packets.

@@ -1,15 +1,16 @@
 from numba import njit, types
 import numpy as np
 
-@njit("uint16(uint8, uint8)", cache=True)
-def two_bytes_to_int(b1: np.uint8, b2: np.uint8) -> np.uint16:
-    return np.int16(b2 & 0xFF) * 256 + (b1 & 0xFF)
+# @njit("int16(uint8, uint8)", cache=True)
+def two_bytes_to_int(b1: np.uint8, b2: np.uint8) -> np.int16:
+    return np.uint16(b2 & 0xFF) * 256 + (b1 & 0xFF)
 
-@njit("uint32(uint8, uint8, uint8)", cache=True)
-def three_bytes_to_int(b3: np.uint8, b2: np.uint8, b1: np.uint8) -> np.uint32:
-    return np.int32(b3 & 0xFF) | ((b2 & 0xFF) << 8) | ((b1 & 0xFF) << 16)
 
-@njit(inline='always')
+# @njit("int32(uint8, uint8, uint8)", cache=True)
+def three_bytes_to_int(b3: np.uint8, b2: np.uint8, b1: np.uint8) -> np.int32:
+    return np.uint32(np.uint32(b3) | (np.uint32(b2) << 8) | (np.uint32(b1) << 16))
+
+# @njit(inline='always')
 def unpack_value(v):
     mult10 = v // 6000
     res = v % 6000

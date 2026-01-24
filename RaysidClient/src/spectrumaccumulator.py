@@ -15,7 +15,7 @@ class SpectrumAccumulator:
         mask = spectrum_chunk > ((1e3 + np.max(self.spectrum)) * 5)
         spectrum_chunk = np.where(mask, self.spectrum, spectrum_chunk)
         
-        if (start_ch != 0) and (end_ch != 0):
+        if not ((start_ch == 0) and (end_ch == 0)):
             self.spectrum[start_ch:end_ch] = spectrum_chunk[start_ch:end_ch]
         
 

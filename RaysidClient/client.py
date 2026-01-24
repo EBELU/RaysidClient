@@ -37,6 +37,11 @@ if platform.system() == "Windows":
 _connect_lock = asyncio.Lock()  # ensures only one BLE connect/scan at a time
 
 class RaysidClientAsync:
+    """
+    Async implementation of the Raysid Client. Generally more stable and more responsive compared with the threaded version but async can be hassle.
+    
+    
+    """
     def __init__(self, address):
         self._address = address
         self.name = ""
@@ -53,8 +58,11 @@ class RaysidClientAsync:
         
         self._tx_queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._tx_task: asyncio.Task | None = None
+        self._rx_queue: asyncio.Queue[bytes] = asyncio.Queue()
+        self._rx_task: asyncio.Task | None = None
+        self._np_rx_buffer = np.empty(512, dtype=np.uint8) 
         self._ping_task: asyncio.Task | None = None
-        self.active_tab = 0
+        self.active_tab = 1
         
         self._spectrum_packet_buffer = None
 
@@ -74,7 +82,7 @@ class RaysidClientAsync:
     def LatestSpectrum(self):
         return self._spectrum_accumulator.snapshot()
     
-    async def Reset(self, Erange = 2):
+    async def reset(self, Erange = 2):
         Erange = np.uint8(Erange)
         """
         8 - switch to spectrum range 25..1000kev
@@ -88,6 +96,11 @@ class RaysidClientAsync:
         data[0] = 0x10              # command - clear spectrum
         data[1] = Erange
         await self.send_packet(data)
+        
+    async def set_active_tab(self, tab):
+        self.active_tab = tab
+        ping_packet = build_ping_packet(tab)
+        await self.send_packet(ping_packet)
 
     # ------------------ CONTEXT MANAGER ------------------
     async def __aenter__(self):
@@ -176,10 +189,6 @@ class RaysidClientAsync:
 
 
     async def _start_notify(self, uuid, callback):
-        """
-
-        """
-
         try:
             await self._client.start_notify(uuid, callback)
             logger.info(f"✅ Notifications started")
@@ -201,6 +210,9 @@ class RaysidClientAsync:
                 if not success:
                     await self._client.disconnect()
                     return False
+                
+                self._rx_queue = asyncio.Queue(maxsize=256)
+                self._rx_task = asyncio.create_task(self._packet_worker())
                 
 
                 if isinstance(self._address, str):
@@ -249,18 +261,12 @@ class RaysidClientAsync:
 
     
     async def _ping_loop(self):
-        try:
-            spect_packet = build_ping_packet(1)
-            cps_packet = build_ping_packet(0)
-            await self.send_packet(spect_packet)
-            
+        try:            
             while self._running and self._client.is_connected:
-                await self.send_packet(spect_packet)
-                await asyncio.sleep(.7)
-
-                await self.send_packet(cps_packet)
-                logger.debug("Ping!")
-                await asyncio.sleep(2)
+                ping_packet = build_ping_packet(self.active_tab)
+                await self.send_packet(ping_packet)
+                logger.debug(f"Ping! {self.active_tab}")
+                await asyncio.sleep(10)
 
         except asyncio.CancelledError:
             pass
@@ -268,81 +274,161 @@ class RaysidClientAsync:
 
     # ------------------ NOTIFICATION HANDLER ------------------
     def _handle_notification(self, _, data: bytearray):
+        """
+        BLE callback — must be extremely fast.
+        Just copy bytes and enqueue.
+        """
+        try:
+            self._rx_queue.put_nowait(bytes(data))
+        except asyncio.QueueFull:
+            logger.warning("⚠️ RX queue full — dropping packet")
+
+    
+    async def _packet_worker(self):
+        """
+        Background task that processes BLE packets.
+        """
+        while True:
+            data = await self._rx_queue.get()
+
+            try:
+                self._process_packet(data)
+            except Exception:
+                logger.exception("Packet processing failed")
+                
+
+    
+
+    def _process_packet(self, data: bytes):
         if len(data) < 2:
             return
+
         pkt_type = data[1]
+        buf = np.frombuffer(data, dtype=np.uint8)
 
         if pkt_type == 0x17:
-            cps = decode_cps_packet(np.frombuffer(data, np.uint8))
-            if cps[0] != 0:
-                error_code = cps[0]
-                if error_code == 1:
-                    logger.debug("⚠️  OVERLOAD — CPS not updated")
-                elif error_code == 2:
-                    logger.debug("⚠️  No CPS returned, unknown error")
-                else:
-                    raise RuntimeError("CPS decode failed, unknown error")
-            if cps[1] > 0 and cps[2] > 0:
-                logger.debug(f"📈 CPS: {cps[1]:.3f} | Dose rate: {cps[2]:.3f} uSv/h")
+            # print("CPS", bytes(buf).hex())
+            self._handle_cps_packet(buf)
 
-                self._latest_cps = CurrentValuesPackage(*cps[1:], time.time())
         elif pkt_type == 0x02:
-            status = decode_status_packet(np.frombuffer(data, np.uint8))
-            
-            ERR            = 0
-            UART_ERRORS    = 1
-            BATTERY        = 2
-            TEMPERATURE    = 3
-            TEMP_OK        = 4
-            CHARGING       = 5
-            CHANNEL_FULL   = 6
-            CH239          = 7
-            AVG_CH239      = 8
-            
-            if status[ERR] != 0:
-                raise RuntimeError("Status decode failed")
-            
-            # Log in a readable format
-            logger.debug(
-                f"🔋 Battery: {status[BATTERY]}% {'(charging)' if status[CHARGING] else ''} | "
-                f"🌡 Temperature: {status[TEMPERATURE]:.1f}°C | Temp OK: {status[TEMP_OK]} | "
-                f"Full channel: {status[CHANNEL_FULL]} | "
-                f"239keV ch: {status[CH239]} avg: {status[AVG_CH239]} | "
-                f"UART errors: {status[UART_ERRORS]}"
+            # print("Status", bytes(buf).hex())
+            self._handle_status_packet(buf)
+
+        else:
+            self._handle_spectrum_packet(buf)
+
+    
+    def _handle_cps_packet(self, data: bytes):
+        cps = decode_cps_packet(data)
+
+        error_code = cps[0]
+        if error_code:
+            if error_code == 1:
+                logger.debug("⚠️ OVERLOAD — CPS not updated")
+            elif error_code == 2:
+                logger.debug("⚠️ No CPS returned, unknown error")
+            else:
+                raise RuntimeError("CPS decode failed")
+
+        if cps[1] > 0 and cps[2] > 0:
+            self._latest_cps = CurrentValuesPackage(
+                cps[1], cps[2], time.time()
             )
             
-            if status[UART_ERRORS] == 0:
-                self._latest_status = StatusPackage(*status[BATTERY:], time.time())
-                
+    def _handle_status_packet(self, data: bytes):
+        status = decode_status_packet(data)
+
+        ERR, UART_ERRORS, BATTERY, TEMPERATURE, TEMP_OK, CHARGING, CHANNEL_FULL, CH239, AVG_CH239 = range(9)
+
+        if status[ERR] != 0:
+            raise RuntimeError("Status decode failed")
+
+        if status[UART_ERRORS] == 0:
+            self._latest_status = StatusPackage(
+                *status[BATTERY:], time.time()
+            )
+    
+    def _handle_spectrum_packet(self, data: bytes):
+        if not hasattr(self, "_spectrum_chunks"):
+            self._spectrum_chunks = []
+
+        pkt_type = data[1]
         if pkt_type in (0x30, 0x31, 0x32) and len(data) > 7:
-            if self._spectrum_packet_buffer:
-                spectrum_result = decode_spectrum_packet(np.frombuffer(self._spectrum_packet_buffer, np.uint8))
-                logger.debug("Decoding Spectrum")
-                self._spectrum_accumulator.insert(*spectrum_result[1:])
-                self._spectrum_packet_buffer = None
-                logger.debug("Spectrum Decoded")
+            if len(self._spectrum_chunks) > 0:
+                packet = b"".join(self._spectrum_chunks)
+                packet = np.frombuffer(packet, dtype=np.uint8)
+                
+                total_bytes = np.uint16(packet[0])
+
+                if total_bytes == 0:
+                    total_bytes = 256
+                    
+                # print(len(packet) - total_bytes-1)
+                spectrum_packet = None
+                suffix_packet = None
+                if len(packet) > total_bytes + 1:
+                    suffix_packet = packet[total_bytes + 1:]
+                    spectrum_packet = packet[:total_bytes + 1]
+
+                    # print(bytes(suffix_packet).hex())
+                else:
+                    spectrum_packet = packet
+
+                cps = unknown = None
+                if suffix_packet is not None:
+                    if suffix_packet[1] == 0x17:
+                        cps = suffix_packet
+                    elif suffix_packet[1] == 0x01:
+                        unknown = suffix_packet
+                        start_code = suffix_packet[:2]
+                        sec_1 = suffix_packet[2:6]
+                        sec_2 = suffix_packet[6:10]
+                        sec_3 = suffix_packet[10:14]
+                        sec_4 = suffix_packet[14:17]
+                        print(f"    {bytes(sec_1).hex()}   {int.from_bytes(sec_1, "little")}  {sum(self._spectrum_accumulator.snapshot().spectrum)}")
+                        print(f"            {bytes(sec_2).hex()}   {int.from_bytes(sec_2, "little")//10}")
+                        print(f"                    {bytes(sec_3).hex()}   {int.from_bytes(sec_3, "little")/600}")
+                        print(f"                            {bytes(sec_4).hex()}   {int.from_bytes(sec_4, "little")*10/1000}")
+                        print(bytes(suffix_packet).hex())
+                    else:
+                        unknown = suffix_packet[:-26]
+                        cps = suffix_packet[-13:]
+                    
+                    if cps is not None and cps[1] == 0x17:
+                        self._handle_cps_packet(cps)
+
+
+
+                spectrum_result = decode_spectrum_packet(spectrum_packet)
+                self._spectrum_chunks.clear()
+                self._spectrum_chunks.append(data)
                 error_code = spectrum_result[0]
-                if error_code == 1:
-                    logger.warning("Invalid spetrum packet received")
+                if error_code == 0:
+                    self._spectrum_accumulator.insert(*spectrum_result[1:])
+                elif error_code == 1:
+                    logger.debug("Invalid spectrum packet")
                 elif error_code == 2:
-                    logger.warning("Index error in X")
+                    logger.debug("Index error in X")
                 elif error_code == 3:
-                    logger.warning("Index error in pos")
+                    logger.debug("Index error in pos")
             else:
-                self._spectrum_packet_buffer = data
-        elif self._spectrum_packet_buffer:
-            try:
-                self._spectrum_packet_buffer += (data)
-            except BufferError:
-                self._spectrum_packet_buffer = None
+                self._spectrum_chunks.clear()
+                self._spectrum_chunks.append(data)
+        else:
+            self._spectrum_chunks.append(data)
                 
 
-import asyncio
+
 import threading
 import traceback
 
 
 class RaysidClient:
+    """
+    Threaded implementation of the RaysidClient. Communications with devices is handled through a background thread removing the need for async. 
+    
+    Data can be accessed by RaysidClient.LatestRealTimeData, RaysidClient.LatestStatusData, LatestSpectrum
+    """
     def __init__(self, address):
         self._address = address
 
@@ -358,14 +444,51 @@ class RaysidClient:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+    
+    def reset(self, Erange=2):        
+        Erange = np.uint8(Erange)
+        """
+        8 - switch to spectrum range 25..1000kev
+        4 - switch to spectrum range 30..2000kev
+        2 - switch to spectrum range 40..3500kev
+        """
+        if Erange not in [np.uint(2), np.uint8(4), np.uint(8)]:
+            raise RuntimeError(f"Invalid energy range in reset, recieved range command {Erange}")
+        
+        if not self._loop or not self._client:
+            raise RuntimeError("Client not started")
+        
+        async def wrapper():
+            return await self._client.reset(Erange)
+        
+        future = asyncio.run_coroutine_threadsafe(wrapper(), self._loop)
+        return future.result(timeout=5) 
+    
+    def set_active_tab(self, tab):
+        if not self._loop or not self._client:
+            raise RuntimeError("Client not started")
+        
+        async def wrapper():
+            return await self._client.set_active_tab(tab)
+        
+        future = asyncio.run_coroutine_threadsafe(wrapper(), self._loop)
+        return future.result(timeout=5) 
+        
 
+    def __enter__(self):
+        self.start()
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.stop()
+        
     def start(self):
         if self._thread:
             return
 
         self._thread = threading.Thread(
             target=self._run_loop,
-            daemon=False,  # ❗ DO NOT daemonize
+            daemon=False,  # DO NOT daemonize
         )
         self._thread.start()
 
@@ -373,7 +496,7 @@ class RaysidClient:
             raise RuntimeError("RaysidClient failed to start")
 
     def stop(self):
-        if not self._loop:
+        if not self._loop or self._stopped.is_set():
             return
 
         async def shutdown():
@@ -397,13 +520,6 @@ class RaysidClient:
 
         self._client = None
         self._loop = None
-
-    def __enter__(self):
-        self.start()
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        self.stop()
 
     # ------------------------------------------------------------------
     # Data access
@@ -460,3 +576,12 @@ class RaysidClient:
             self.stop()
         except Exception:
             pass
+
+if __name__ == "__main__":
+    with RaysidClient("60:8A:10:32:15:43") as client:
+
+        for i in range(40):
+            print(client.LatestRealTimeData)
+            
+            time.sleep(0.5)
+    
