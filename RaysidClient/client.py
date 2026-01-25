@@ -385,11 +385,11 @@ class RaysidClientAsync:
                         sec_2 = suffix_packet[6:10]
                         sec_3 = suffix_packet[10:14]
                         sec_4 = suffix_packet[14:17]
-                        print(f"    {bytes(sec_1).hex()}   {int.from_bytes(sec_1, "little")}  {sum(self._spectrum_accumulator.snapshot().spectrum)}")
-                        print(f"            {bytes(sec_2).hex()}   {int.from_bytes(sec_2, "little")//10}")
-                        print(f"                    {bytes(sec_3).hex()}   {int.from_bytes(sec_3, "little")/600}")
-                        print(f"                            {bytes(sec_4).hex()}   {int.from_bytes(sec_4, "little")*10/1000}")
-                        print(bytes(suffix_packet).hex())
+                        # print(f"    {bytes(sec_1).hex()}   {int.from_bytes(sec_1, "little")}  {sum(self._spectrum_accumulator.snapshot().spectrum)}")
+                        # print(f"            {bytes(sec_2).hex()}   {int.from_bytes(sec_2, "little")//10}")
+                        # print(f"                    {bytes(sec_3).hex()}   {int.from_bytes(sec_3, "little")/600}")
+                        # print(f"                            {bytes(sec_4).hex()}   {int.from_bytes(sec_4, "little")*10/1000}")
+                        # print(bytes(suffix_packet).hex())
                     else:
                         unknown = suffix_packet[:-26]
                         cps = suffix_packet[-13:]

@@ -65,6 +65,7 @@ def decode_spectrum_packet(data: np.array):
 
     X = two_bytes_to_int(data[2], data[3])
     start_X = two_bytes_to_int(data[2], data[3])
+
     
     current_value = three_bytes_to_int(data[4], data[5], data[6])
 
@@ -80,6 +81,9 @@ def decode_spectrum_packet(data: np.array):
     # Decode loop
     total_new_values = 0
     while pos < (len(data) - 4):
+            
+        # if 320 < X and X < 360:
+        #     print(bytes(data).hex())
         point_type, point_amount = data[pos] >> 6, data[pos] & 0x3F
         
         # Special case
@@ -133,8 +137,8 @@ def decode_spectrum_packet(data: np.array):
             amount_same_type = 0
             while amount_same_type < point_amount:
                 if not check_pos(data_len, pos, 1): return 3,0,0,spectrum
-                diff =  np.int32(data[pos] & 0xFF)
-                if diff > 127: diff -= 256
+                diff =  np.int8(data[pos])
+
                 current_value += diff
                 
                 total_new_values += 1
@@ -150,25 +154,36 @@ def decode_spectrum_packet(data: np.array):
         elif point_type == 2:
             amount_same_type = 0
             while amount_same_type < point_amount:
+                    
                 if not check_pos(data_len, pos, 1): return 3,0,0,spectrum
-                diff =  np.int32((data[pos] << 4) | ((data[pos+1] >> 4) & 0xF)) & 0xFFF
-                if diff > 2047: diff -= 4096
-                
+                diff = (np.int32(data[pos]) << 4) | (np.int32(data[pos + 1]) >> 4)
+
+                if diff >= 0x800:
+                    diff = diff - 0x1000
+                else:
+                    diff = diff
                 current_value += diff
                 total_new_values += 1
                 for i in range(channel_div):
                     if not check_X(X):
                         return 2,0,0,spectrum
                     spectrum[X] = current_value / channel_div
+                    
                     X += 1
                 amount_same_type += 1
                 pos += 2
                 
                 if amount_same_type < point_amount:
                     if not check_pos(data_len, pos, 0): return 3,0,0,spectrum
-                    diff =  np.int32((data[pos-1] & 0xF) << 8) | (data[pos] & 0xFF)
-                    if diff > 2047: diff -= 4096
-                    
+                    hi = data[pos - 1].astype(np.int32)
+                    lo = data[pos].astype(np.int32)
+
+                    diff = ((hi & 0x0F) << 8) | lo
+                    if diff >= 0x800:
+                        diff = diff - 0x1000
+                    else:
+                        diff = diff
+
                     current_value += diff
                     for i in range(channel_div):
                         if not check_X(X):
@@ -183,7 +198,7 @@ def decode_spectrum_packet(data: np.array):
             amount_same_type = 0
             while amount_same_type < point_amount:
                 if not check_pos(data_len, pos, 1): return 3,0,0,spectrum
-                diff =  np.int32((data[pos+1] & 0xFF)<<8)+((data[pos] & 0xFF)<<0)
+                diff =  np.int32((data[pos+1] & 0xFF) << 8) | (data[pos] & 0xFF)
                 if diff>32767 :diff -=65536
                 
                 current_value += diff
