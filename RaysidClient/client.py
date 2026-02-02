@@ -2,6 +2,7 @@ import asyncio
 import time
 import platform
 import threading
+import contextlib
 
 import numpy as np
 
@@ -60,6 +61,7 @@ class RaysidClientAsync:
         self._tx_task: asyncio.Task | None = None
         self._rx_queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._rx_task: asyncio.Task | None = None
+        self._reconnect_task: asyncio.Task | None = None
         self._np_rx_buffer = np.empty(512, dtype=np.uint8) 
         self._ping_task: asyncio.Task | None = None
         self.active_tab = 1
@@ -108,24 +110,31 @@ class RaysidClientAsync:
         return started_client
     
     async def start(self):
-        success = False
-        connection_attempts = 0
-        while not success and connection_attempts < 5:
-            connection_attempts += 1
-            success = await self._connect()
-            if not success:
-                logger.warning(f"❌ Connection attempt {connection_attempts}/5 failed! Retrying in 3s...")
-                await asyncio.sleep(3)
-                if connection_attempts == 4:
-                    raise RuntimeError("Connection failed!")
+        try:
+            logger.info(f"📶 Connecting to {self._address}")
+            success = False
+            connection_attempts = 0
+            while not success and connection_attempts < 6:
+                connection_attempts += 1
+                success = await self._connect()
+                if not success:
+                    logger.warning(f"❌ Connection attempt {connection_attempts}/5 failed! Retrying in 3s...")
+                    await asyncio.sleep(3)
+                    if connection_attempts == 4:
+                        raise RuntimeError("Connection failed!")
 
-        
-        self._running = True
-        
-        self._tx_task = asyncio.create_task(self._tx_loop())
-        self._ping_task = asyncio.create_task(self._ping_loop())
-        logger.info("✅ Client started successfully")
-        return self
+            
+            self._running = True
+            
+            self._tx_task = asyncio.create_task(self._tx_loop())
+            self._ping_task = asyncio.create_task(self._ping_loop())
+            logger.info("✅ Client started successfully")
+            return self
+        except asyncio.CancelledError:
+            logger.info("🛑 Client start cancelled — cleaning up")
+            await self.stop()
+            
+            raise
     
 
     async def __aexit__(self, exc_type, exc, tb):                
@@ -133,12 +142,13 @@ class RaysidClientAsync:
         
     async def stop(self):
         self._stopped = True
-        self._ping_task.cancel()
-        self._tx_task.cancel()
+        possible_tasks = [self._ping_task, self._tx_task, self._rx_task, self._reconnect_task]
+        for task in possible_tasks:
+            if task:
+                task.cancel()
         
         await asyncio.gather(
-            self._ping_task,
-            self._tx_task,
+            *possible_tasks,
             return_exceptions=True
         )
         if self._client.is_connected:
@@ -150,40 +160,61 @@ class RaysidClientAsync:
     # ------------------ PRIVATE METHODS ------------------
 
     def _on_disconnect(self, client):
+        
         if self._running:
             logger.warning(f"❌ BLE device {self.device_name} disconnected!")
             if not self._stopped:
-                asyncio.create_task(self._reconnect_loop())
+                self._reconnect_task = asyncio.create_task(self._reconnect_loop())
 
         self._running = False
         self._disconnected.set()
 
-        if hasattr(self, "_parent_on_disconnect") and self._parent_on_disconnect:
-            self._parent_on_disconnect()
+
 
 
     async def _reconnect_loop(self):
         """Attempt to reconnect until successful or client is stopped."""
-        max_attempts = 5  # 0 = infinite
-        attempt = 0
+        try:
+            max_attempts = 5  # 0 = infinite
+            attempt = 0
+            
+            restart_tasks = [
+                task for task in (self._tx_task, self._rx_task, self._ping_task)
+                if task and not task.done()
+            ]
 
-        while not self._stopped:
-            attempt += 1
-            if max_attempts and attempt > max_attempts:
-                logger.error("❌ Maximum reconnection attempts reached!")
-                break
+            for task in restart_tasks:
+                task.cancel()
+                
+            for task in restart_tasks:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
 
-            logger.info(f"🔄 Attempting to reconnect to {self.device_name} (try {attempt})...")
-            success = await self._connect()
-            if success:
-                logger.info(f"✅ Reconnected to {self.device_name}")
-                self._running = True
-                # Restart TX and ping loops
-                self._tx_task = asyncio.create_task(self._tx_loop())
-                self._ping_task = asyncio.create_task(self._ping_loop())
-                break
+            while not self._stopped:
+                attempt += 1
+                if max_attempts and attempt > max_attempts:
+                    logger.error("❌ Maximum reconnection attempts reached!")
+                    break
 
-            await asyncio.sleep(3)  # wait 3s before retry
+                logger.info(f"🔄 Attempting to reconnect to {self.device_name} (try {attempt})...")
+                success = await self._connect()
+                if success:
+                    logger.info(f"✅ Reconnected to {self.device_name}")
+                    self._running = True
+                    # Restart TX and ping loops
+
+
+                    self._tx_task = asyncio.create_task(self._tx_loop())
+                    self._rx_task = asyncio.create_task(self._packet_worker())
+                    self._ping_task = asyncio.create_task(self._ping_loop())
+                    break
+
+                await asyncio.sleep(3)  # wait 3s before retry
+        except asyncio.CancelledError:
+            logger.info("🛑 Reconnect loop cancelled")
+            await self.stop()
+            raise
+
 
 
 
@@ -288,16 +319,17 @@ class RaysidClientAsync:
         """
         Background task that processes BLE packets.
         """
-        while True:
-            data = await self._rx_queue.get()
+        try:
+            while self._running:
+                data = await self._rx_queue.get()
 
-            try:
-                self._process_packet(data)
-            except Exception:
-                logger.exception("Packet processing failed")
-                
-
-    
+                try:
+                    self._process_packet(data)
+                except Exception:
+                    logger.exception("Packet processing failed")
+        except asyncio.CancelledError:
+            # cleanly exit loop
+            return
 
     def _process_packet(self, data: bytes):
         if len(data) < 2:
