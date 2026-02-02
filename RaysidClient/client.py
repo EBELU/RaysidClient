@@ -3,6 +3,7 @@ import time
 import platform
 import threading
 import contextlib
+import logging
 
 import numpy as np
 
@@ -43,7 +44,10 @@ class RaysidClientAsync:
     
     
     """
-    def __init__(self, address):
+    def __init__(self, address, logger = None):
+        
+        self.logger = logger or logging.getLogger("RaysidClient")
+        
         self._address = address
         self.name = ""
         self._client = BleakClient(address, timeout=15, disconnected_callback=self._on_disconnect)
@@ -151,6 +155,7 @@ class RaysidClientAsync:
             *possible_tasks,
             return_exceptions=True
         )
+        
         if self._client.is_connected:
             await self._client.stop_notify(RX_UUID)
             await self._client.disconnect()
@@ -320,7 +325,7 @@ class RaysidClientAsync:
         Background task that processes BLE packets.
         """
         try:
-            while self._running:
+            while self._running and self._rx_task:
                 data = await self._rx_queue.get()
 
                 try:
