@@ -48,7 +48,7 @@ class RaysidClientAsync:
         
         self._address = address
         self.name = ""
-        self._client = BleakClient(address, timeout=15, disconnected_callback=self._on_disconnect)
+        self._client = BleakClient(address, timeout=5, disconnected_callback=self._on_disconnect)
         
         self._latest_cps: CurrentValuesPackage | None = None
         self._latest_status: StatusPackage | None = None
@@ -164,7 +164,10 @@ class RaysidClientAsync:
         
         if self._running:
             logger.warning(f"❌ BLE device {self.device_name} disconnected!")
-            if not self._stopped:
+            if (
+                not self._stopped
+                and (self._reconnect_task is None or self._reconnect_task.done())
+            ):
                 self._reconnect_task = asyncio.create_task(self._reconnect_loop())
 
         self._running = False
@@ -208,6 +211,7 @@ class RaysidClientAsync:
                     self._tx_task = asyncio.create_task(self._tx_loop())
                     self._rx_task = asyncio.create_task(self._packet_worker())
                     self._ping_task = asyncio.create_task(self._ping_loop())
+                    self._disconnected.clear()
                     break
 
                 await asyncio.sleep(3)  # wait 3s before retry
@@ -251,6 +255,9 @@ class RaysidClientAsync:
 
                 logger.info(f"✅ Connected to {self.device_name}")
                 return True
+            except asyncio.TimeoutError:
+                logger.warning("⏱️ Connection timeout")
+                return False
             
             except BleakDBusError as e:
                 if "InProgress" in str(e):
@@ -259,6 +266,13 @@ class RaysidClientAsync:
                 else:
                     return False
 
+            except BleakError as e:
+                logger.warning(f"❌ Bleak error during connect: {e}")
+                return False
+
+            except Exception as e:
+                logger.error(f"❌ Unexpected connect error: {e}")
+                return False
             
             
     async def _tx_loop(self):
@@ -270,7 +284,6 @@ class RaysidClientAsync:
                 packet = await self._tx_queue.get()
                 
                 packet = build_tx2_packet(packet)
-
                 await self._client.write_gatt_char(
                     TX_UUID,
                     packet,
@@ -286,7 +299,6 @@ class RaysidClientAsync:
             
     def send_packet(self, packet: bytes):
         """Put a byte packet in to tx_queue
-
         """
         self._tx_queue.put_nowait(packet)
 
@@ -415,8 +427,8 @@ class RaysidClientAsync:
                 cps = spect_meta = None
                 if suffix_packet is not None:
                     if suffix_packet[1] == 0x17 and len(suffix_packet) == 13:
-
                         cps = suffix_packet
+                        
                     elif suffix_packet[1] == 0x01 and len(suffix_packet) == 21:
                         spect_meta = suffix_packet
 
@@ -589,6 +601,7 @@ class RaysidClient:
             self.on_disconnect()
             
     def __del__(self):
+        # Force stop in case of improper shutdown
         try:
             self.stop()
         except Exception:
