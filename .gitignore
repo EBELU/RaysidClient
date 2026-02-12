@@ -2,4 +2,6 @@
 dist*
 build*
 *.spec
+__decoders*
+.vscode/
 

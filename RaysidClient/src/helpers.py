@@ -10,11 +10,12 @@ def two_bytes_to_int(b1: np.uint8, b2: np.uint8) -> np.int16:
 def three_bytes_to_int(b3: np.uint8, b2: np.uint8, b1: np.uint8) -> np.int32:
     return np.uint32(np.uint32(b3) | (np.uint32(b2) << 8) | (np.uint32(b1) << 16))
 
+def four_bytes_to_long(b3, b2, b1, b0):
+    return np.int64((np.uint32(b3) << 24) | (np.uint32(b2) << 16) | (np.uint32(b1) << 8) | np.uint32(b0))
+
 # @njit(inline='always')
 def unpack_value(v):
     mult10 = v // 6000
     res = v % 6000
     return res * (10 ** mult10)
 
-def long_to_bytes(l):
-    return bytes([(l>>24)&0xFF, (l>>16)&0xFF, (l>>8)&0xFF, l&0xFF])

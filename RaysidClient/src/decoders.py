@@ -1,7 +1,7 @@
 import numpy as np
 # from numba import njit, types
 
-from .helpers import two_bytes_to_int, three_bytes_to_int, unpack_value
+from .helpers import two_bytes_to_int, three_bytes_to_int, four_bytes_to_long,unpack_value
 
 # @njit(types.bool(types.uint16), cache=True, inline = "always")
 def check_X(X):
@@ -32,17 +32,11 @@ def decode_spectrum_packet(data: np.array):
     spectrum = np.zeros(1800, dtype = np.float32)
     
     
-    recieved_bytes = (len(data))
-    excepted_bytes = data[0]
-    
     total_bytes = np.uint16(data[0])
     if total_bytes == 0:
         total_bytes = 256
 
-    extra_data = None
     if len(data) > total_bytes + 1:
-        # print(bytearray(data[total_bytes + 1:]).hex())
-        extra_data = data[total_bytes + 1:]
         data = data[:total_bytes + 1]
 
 
@@ -82,8 +76,7 @@ def decode_spectrum_packet(data: np.array):
     total_new_values = 0
     while pos < (len(data) - 4):
             
-        # if 320 < X and X < 360:
-        #     print(bytes(data).hex())
+
         point_type, point_amount = data[pos] >> 6, data[pos] & 0x3F
         
         # Special case
@@ -104,7 +97,7 @@ def decode_spectrum_packet(data: np.array):
                 diff = np.int32(data[pos] & 0xFF) // 16
                 if diff > 7: diff -= 16
                 current_value += diff
-                # print(amount_same_type, point_amount, current_value)
+
                 for i in range(channel_div):
                     if not check_X(X):
                         return 2,0,0,spectrum
@@ -128,7 +121,7 @@ def decode_spectrum_packet(data: np.array):
                     total_new_values += 1
                     
                     amount_same_type += 1
-                    # print(amount_same_type, point_amount, current_value)
+
             
                 pos += 1
 
@@ -261,6 +254,29 @@ def decode_cps_packet(data) -> tuple:
         return 0, cps, dose
     else:
         return 2, 0, 0
+    
+def decode_spectrum_meta_packet(data: np.ndarray):
+    if len(data) != 21:
+        return 1, 0, 0, 0, 0
+
+    spectrum_ticks = four_bytes_to_long(
+        data[5], data[4], data[3], data[2]
+    )
+
+    uptime = np.float32(four_bytes_to_long(
+        data[9], data[8], data[7], data[6]
+    )) / 12.0
+
+    energy = four_bytes_to_long(
+        data[13], data[12], data[11], data[10]
+    )
+
+    highEnergyCounts = three_bytes_to_int(
+        data[14], data[15], data[16]
+    )
+
+    return 0, spectrum_ticks, uptime, energy, highEnergyCounts
+    
     
 #@njit(types.uint16(types.uint8, types.uint8),inline="always")
 def u16(lo, hi):

@@ -18,14 +18,12 @@ from .src import (
     decode_cps_packet,
     decode_spectrum_packet,
     decode_status_packet,
+    decode_spectrum_meta_packet,
     CurrentValuesPackage,
     SpectrumResult,
     StatusPackage,
     SpectrumAccumulator,
-    two_bytes_to_int,
-    unpack_value,
 )   
-    
 
 
 SERVICE_UUID = "49535343-fe7d-4ae5-8fa9-9fafd205e455"
@@ -72,8 +70,6 @@ class RaysidClientAsync:
         
         self._spectrum_packet_buffer = None
 
-        
-
 
     # ------------------ PUBLIC API ------------------
     @property
@@ -88,7 +84,7 @@ class RaysidClientAsync:
     def LatestSpectrum(self):
         return self._spectrum_accumulator.snapshot()
     
-    async def reset(self, Erange = 2):
+    def reset(self, Erange = 4):
         Erange = np.uint8(Erange)
         """
         8 - switch to spectrum range 25..1000kev
@@ -101,12 +97,12 @@ class RaysidClientAsync:
         data = bytearray(2)
         data[0] = 0x10              # command - clear spectrum
         data[1] = Erange
-        await self.send_packet(data)
+        self.send_packet(data)
         
-    async def set_active_tab(self, tab):
+    def set_active_tab(self, tab):
         self.active_tab = tab
         ping_packet = build_ping_packet(tab)
-        await self.send_packet(ping_packet)
+        self.send_packet(ping_packet)
 
     # ------------------ CONTEXT MANAGER ------------------
     async def __aenter__(self):
@@ -221,9 +217,6 @@ class RaysidClientAsync:
             raise
 
 
-
-
-
     async def _start_notify(self, uuid, callback):
         try:
             await self._client.start_notify(uuid, callback)
@@ -291,16 +284,21 @@ class RaysidClientAsync:
                 logger.error(f"❌ TX failed: {e}")
 
             
-    async def send_packet(self, packet: bytes):
-        await self._tx_queue.put(packet)
+    def send_packet(self, packet: bytes):
+        """Put a byte packet in to tx_queue
+
+        """
+        self._tx_queue.put_nowait(packet)
 
 
     
     async def _ping_loop(self):
+        """Pings the device every 10s to maintain connection
+        """
         try:            
             while self._running and self._client.is_connected:
                 ping_packet = build_ping_packet(self.active_tab)
-                await self.send_packet(ping_packet)
+                self.send_packet(ping_packet)
                 logger.debug(f"Ping! {self.active_tab}")
                 await asyncio.sleep(10)
 
@@ -314,10 +312,13 @@ class RaysidClientAsync:
         BLE callback — must be extremely fast.
         Just copy bytes and enqueue.
         """
+
         try:
             self._rx_queue.put_nowait(bytes(data))
         except asyncio.QueueFull:
             logger.warning("⚠️ RX queue full — dropping packet")
+
+        
 
     
     async def _packet_worker(self):
@@ -330,6 +331,7 @@ class RaysidClientAsync:
 
                 try:
                     self._process_packet(data)
+
                 except Exception:
                     logger.exception("Packet processing failed")
         except asyncio.CancelledError:
@@ -344,15 +346,14 @@ class RaysidClientAsync:
         buf = np.frombuffer(data, dtype=np.uint8)
 
         if pkt_type == 0x17:
-            # print("CPS", bytes(buf).hex())
             self._handle_cps_packet(buf)
 
         elif pkt_type == 0x02:
-            # print("Status", bytes(buf).hex())
             self._handle_status_packet(buf)
 
         else:
             self._handle_spectrum_packet(buf)
+
 
     
     def _handle_cps_packet(self, data: bytes):
@@ -379,7 +380,7 @@ class RaysidClientAsync:
 
         if status[ERR] != 0:
             raise RuntimeError("Status decode failed")
-
+        # I dont like this :(
         if status[UART_ERRORS] == 0:
             self._latest_status = StatusPackage(
                 *status[BATTERY:], time.time()
@@ -400,39 +401,41 @@ class RaysidClientAsync:
                 if total_bytes == 0:
                     total_bytes = 256
                     
-                # print(len(packet) - total_bytes-1)
+
                 spectrum_packet = None
                 suffix_packet = None
                 if len(packet) > total_bytes + 1:
                     suffix_packet = packet[total_bytes + 1:]
                     spectrum_packet = packet[:total_bytes + 1]
 
-                    # print(bytes(suffix_packet).hex())
                 else:
                     spectrum_packet = packet
 
-                cps = unknown = None
+                    
+                cps = spect_meta = None
                 if suffix_packet is not None:
-                    if suffix_packet[1] == 0x17:
+                    if suffix_packet[1] == 0x17 and len(suffix_packet) == 13:
+
                         cps = suffix_packet
-                    elif suffix_packet[1] == 0x01:
-                        unknown = suffix_packet
-                        start_code = suffix_packet[:2]
-                        sec_1 = suffix_packet[2:6]
-                        sec_2 = suffix_packet[6:10]
-                        sec_3 = suffix_packet[10:14]
-                        sec_4 = suffix_packet[14:17]
-                        # print(f"    {bytes(sec_1).hex()}   {int.from_bytes(sec_1, "little")}  {sum(self._spectrum_accumulator.snapshot().spectrum)}")
-                        # print(f"            {bytes(sec_2).hex()}   {int.from_bytes(sec_2, "little")//10}")
-                        # print(f"                    {bytes(sec_3).hex()}   {int.from_bytes(sec_3, "little")/600}")
-                        # print(f"                            {bytes(sec_4).hex()}   {int.from_bytes(sec_4, "little")*10/1000}")
-                        # print(bytes(suffix_packet).hex())
-                    else:
-                        unknown = suffix_packet[:-26]
+                    elif suffix_packet[1] == 0x01 and len(suffix_packet) == 21:
+                        spect_meta = suffix_packet
+
+                    elif len(suffix_packet) == 44:
+                        spect_meta = suffix_packet[:-26]
                         cps = suffix_packet[-13:]
+                    else:
+                        logger.debug("Unknown suffix packet recieved")
                     
                     if cps is not None and cps[1] == 0x17:
                         self._handle_cps_packet(cps)
+                        
+                    if spect_meta is not None and spect_meta[1] == 0x01:
+                        meta_data = decode_spectrum_meta_packet(suffix_packet)
+                        if meta_data[0] == 0:
+                            self._spectrum_accumulator.update_meta(*meta_data[1:])
+                            
+                        else:
+                            logger.debug("Invalid length of meta packet")
 
 
 
@@ -462,71 +465,67 @@ import traceback
 
 class RaysidClient:
     """
-    Threaded implementation of the RaysidClient. Communications with devices is handled through a background thread removing the need for async. 
+    Threaded wrapper around RaysidClientAsync.
     
-    Data can be accessed by RaysidClient.LatestRealTimeData, RaysidClient.LatestStatusData, LatestSpectrum
+    Provides synchronous API access from another thread.
     """
     def __init__(self, address):
         self._address = address
-
-        self._loop = None
-        self._thread = None
-        self._client = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+        self._client: RaysidClientAsync | None = None
 
         self._started = threading.Event()
         self._stopped = threading.Event()
-
         self.on_disconnect = None
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-    
-    def reset(self, Erange=2):        
-        Erange = np.uint8(Erange)
-        """
-        8 - switch to spectrum range 25..1000kev
-        4 - switch to spectrum range 30..2000kev
-        2 - switch to spectrum range 40..3500kev
-        """
-        if Erange not in [np.uint(2), np.uint8(4), np.uint(8)]:
-            raise RuntimeError(f"Invalid energy range in reset, recieved range command {Erange}")
-        
-        if not self._loop or not self._client:
+    # -------------------- Public API --------------------
+    def reset(self, Erange: int = 2):
+        if not self._client or not self._loop:
             raise RuntimeError("Client not started")
-        
-        async def wrapper():
-            return await self._client.reset(Erange)
-        
-        future = asyncio.run_coroutine_threadsafe(wrapper(), self._loop)
-        return future.result(timeout=5) 
-    
-    def set_active_tab(self, tab):
-        if not self._loop or not self._client:
-            raise RuntimeError("Client not started")
-        
-        async def wrapper():
-            return await self._client.set_active_tab(tab)
-        
-        future = asyncio.run_coroutine_threadsafe(wrapper(), self._loop)
-        return future.result(timeout=5) 
-        
 
+        async def wrapper():
+            await self._client.reset(Erange)
+
+        fut = asyncio.run_coroutine_threadsafe(wrapper(), self._loop)
+        return fut.result(timeout=5)
+
+    def set_active_tab(self, tab: int):
+        if not self._client or not self._loop:
+            raise RuntimeError("Client not started")
+
+        async def wrapper():
+            await self._client.set_active_tab(tab)
+
+        fut = asyncio.run_coroutine_threadsafe(wrapper(), self._loop)
+        return fut.result(timeout=5)
+
+    @property
+    def LatestRealTimeData(self):
+        return self._client.LatestRealTimeData if self._client else None
+
+    @property
+    def LatestStatusData(self):
+        return self._client.LatestStatusData if self._client else None
+
+    @property
+    def LatestSpectrum(self):
+        return self._client.LatestSpectrum if self._client else None
+
+    # -------------------- Context Manager --------------------
     def __enter__(self):
         self.start()
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.stop()
-        
+
+    # -------------------- Lifecycle --------------------
     def start(self):
-        if self._thread:
+        if self._thread and self._thread.is_alive():
             return
 
-        self._thread = threading.Thread(
-            target=self._run_loop,
-            daemon=False,  # DO NOT daemonize
-        )
+        self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
 
         if not self._started.wait(timeout=10):
@@ -539,7 +538,7 @@ class RaysidClient:
         async def shutdown():
             try:
                 if self._client:
-                    await self._client.stop()  # BLE disconnect
+                    await self._client.stop()
             except Exception:
                 traceback.print_exc()
             finally:
@@ -555,29 +554,11 @@ class RaysidClient:
             self._thread.join(timeout=5)
             self._thread = None
 
-        self._client = None
         self._loop = None
+        self._client = None
+        self._stopped.set()
 
-    # ------------------------------------------------------------------
-    # Data access
-    # ------------------------------------------------------------------
-
-    @property
-    def LatestRealTimeData(self):
-        return self._client.LatestRealTimeData if self._client else None
-
-    @property
-    def LatestStatusData(self):
-        return self._client.LatestStatusData if self._client else None
-
-    @property
-    def LatestSpectrum(self):
-        return self._client.LatestSpectrum if self._client else None
-
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
-
+    # -------------------- Internal --------------------
     def _run_loop(self):
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
@@ -587,19 +568,18 @@ class RaysidClient:
         try:
             self._loop.run_forever()
         finally:
-            # Cancel remaining tasks cleanly
             for task in asyncio.all_tasks(self._loop):
                 task.cancel()
 
             self._loop.run_until_complete(
                 asyncio.gather(*asyncio.all_tasks(self._loop), return_exceptions=True)
             )
-
             self._loop.close()
             self._stopped.set()
 
     async def _start_client(self):
         self._client = RaysidClientAsync(self._address)
+        # Wrap disconnect callback
         self._client._parent_on_disconnect = self._handle_disconnect
         await self._client.start()
         self._started.set()

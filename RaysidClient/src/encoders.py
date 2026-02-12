@@ -1,6 +1,7 @@
 import time
 
-from .helpers import long_to_bytes
+def long_to_bytes(l):
+    return bytes([(l>>24)&0xFF, (l>>16)&0xFF, (l>>8)&0xFF, l&0xFF])
 
 
 def crc1(data: bytes) -> int:

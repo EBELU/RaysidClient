@@ -6,10 +6,12 @@ from .encoders import (
     build_tx2_packet,
 )
 
+
 from .decoders import (
     decode_cps_packet,
     decode_spectrum_packet,
     decode_status_packet,
+    decode_spectrum_meta_packet
 )
 
 from .data_classes import (
@@ -18,10 +20,6 @@ from .data_classes import (
     StatusPackage,
 )
 
-from .helpers import (
-    two_bytes_to_int,
-    unpack_value,
-)
 
 from .spectrumaccumulator import SpectrumAccumulator
 
@@ -35,6 +33,7 @@ __all__ = [
     "decode_cps_packet",
     "decode_spectrum_packet",
     "decode_status_packet",
+    "decode_spectrum_meta_packet",
 
     "CurrentValuesPackage",
     "SpectrumResult",

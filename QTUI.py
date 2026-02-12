@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QGroupBox, QPushButton, QLabel, QTextEdit,
     QComboBox
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from qasync import QEventLoop
 
 import matplotlib
@@ -44,27 +44,7 @@ class QTextEditLogger(logging.Handler):
 logging.basicConfig(format="%(name)s - %(levelname)s: %(message)s")
 
 # ===================== DATA API =====================
-@dataclass(frozen=True)
-class CurrentValuesPackage:
-    CPS: float
-    DR: float
-    timestamp: float
-
-@dataclass(frozen=True)
-class StatusPackage:
-    battery: int
-    temperature: float
-    temp_ok: bool
-    charging: bool
-    channel_full: bool
-    ch239: int
-    ch239keV: int
-    timestamp: float
-
-@dataclass(frozen=True)
-class SpectrumResult:
-    spectrum: np.ndarray
-    timestamp: float
+from RaysidClient.src.data_classes import SpectrumResult, CurrentValuesPackage, StatusPackage
     
 class DetectorInfo:
     def __init__(self, name, type, connection_type, address=None):
@@ -121,9 +101,13 @@ class MplCanvas(FigureCanvasQTAgg):
 
 # ===================== MAIN WINDOW =====================
 class MainWindow(QMainWindow):
+    restAcc = Signal()
+    
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Gamma Spectroscopy")
+        
+
 
         self.window_seconds = 20
         self.cps_buf = deque([0.0]*self.window_seconds, maxlen=self.window_seconds)
@@ -140,6 +124,8 @@ class MainWindow(QMainWindow):
         self.btn_start = QPushButton("Start 📦")
         self.btn_stop  = QPushButton("Stop")
         self.btn_reset = QPushButton("Reset")
+        self.btn_reset.clicked.connect(self.restAcc.emit)
+        
         self.btn_toggle_scale = QPushButton("Log Scale")
         self.btn_toggle_scale.setCheckable(True)
         self.btn_roi = QPushButton("Enable ROI ")
@@ -148,6 +134,7 @@ class MainWindow(QMainWindow):
         opt_layout.addWidget(self.btn_stop)
         opt_layout.addWidget(self.btn_reset)
         opt_layout.addWidget(self.btn_toggle_scale)
+        
 
         self.btn_toggle_scale.clicked.connect(self.toggle_spectrum_scale)
 
@@ -302,6 +289,7 @@ class MainWindow(QMainWindow):
         self.spectrum_data = pkg.spectrum
         # self.spectrum_data[:1023] = imported_data.T[1]
         self.spec_line.set_ydata(self.spectrum_data)
+        self.spectrum_canvas.ax.set_title(f"# {pkg.counts}, Time {pkg.uptime}, E {pkg.energy}, HE# {pkg.high_E_counts}")
         if not self.spectrum_canvas.user_scaled:
             self.spectrum_canvas.ax.set_ylim(0, max(1, self.spectrum_data.max() * 1.1))
         # Update all ROIs Gaussian with new spectrum
@@ -408,7 +396,8 @@ async def raysid_update_task(win: MainWindow):
 
     client = RaysidClientAsync(device)
     win.raysid = client
-
+    win.restAcc.connect(client.reset)
+    send_spect = False
     try:
         await client.start()
 
@@ -421,8 +410,12 @@ async def raysid_update_task(win: MainWindow):
             if client.LatestStatusData:
                 win.update_status(client.LatestStatusData)
 
-            if client.LatestSpectrum:
-                win.update_spectrum(client.LatestSpectrum)
+            if send_spect:
+                if client.LatestSpectrum:
+                    win.update_spectrum(client.LatestSpectrum)
+                send_spect = False
+            else:
+                send_spect = True
 
     except asyncio.CancelledError:
         pass
@@ -433,6 +426,7 @@ async def raysid_update_task(win: MainWindow):
 
 # ===================== ENTRY =====================
 def main():
+    print("WARNING This GUI was written by chatGPT in 10 min and FKN SUCKS! Only use for debug")
     app = QApplication(sys.argv)
     loop = QEventLoop(app)
     asyncio.set_event_loop(loop)

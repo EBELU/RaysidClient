@@ -20,4 +20,8 @@ class StatusPackage:
 @dataclass(frozen=True)
 class SpectrumResult:
     spectrum: np.ndarray
+    counts: int
+    uptime: float
+    energy: float
+    high_E_counts: int
     timestamp: float
