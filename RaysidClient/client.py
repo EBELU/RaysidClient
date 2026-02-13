@@ -47,8 +47,11 @@ class RaysidClientAsync:
         self.logger = logger or logging.getLogger("RaysidClient")
         
         self._address = address
-        self.name = ""
-        self._client = BleakClient(address, timeout=5, disconnected_callback=self._on_disconnect)
+        try:
+            self.name = address.name
+        except AttributeError:
+            self.name = "Raysid"
+        self._client = BleakClient(address, timeout=10, disconnected_callback=self._on_disconnect)
         
         self._latest_cps: CurrentValuesPackage | None = None
         self._latest_status: StatusPackage | None = None
@@ -69,6 +72,8 @@ class RaysidClientAsync:
         self.active_tab = 1
         
         self._spectrum_packet_buffer = None
+        
+        self.buf: bytearray = bytearray()
 
 
     # ------------------ PUBLIC API ------------------
@@ -121,7 +126,9 @@ class RaysidClientAsync:
                     logger.warning(f"❌ Connection attempt {connection_attempts}/5 failed! Retrying in 3s...")
                     await asyncio.sleep(3)
                     if connection_attempts == 4:
-                        raise RuntimeError("Connection failed!")
+                        logger.critical("Connection failed")
+                        await self.stop()
+                        return
 
             
             self._running = True
@@ -141,22 +148,31 @@ class RaysidClientAsync:
         await self.stop()
         
     async def stop(self):
-        self._stopped = True
-        possible_tasks = [self._ping_task, self._tx_task, self._rx_task, self._reconnect_task]
-        for task in possible_tasks:
-            if task:
-                task.cancel()
-        
-        await asyncio.gather(
-            *possible_tasks,
-            return_exceptions=True
-        )
-        
-        if self._client.is_connected:
-            await self._client.stop_notify(RX_UUID)
-            await self._client.disconnect()
-            
         self._running = False
+        possible_tasks = [self._ping_task, self._tx_task, self._rx_task, self._reconnect_task]
+        
+        # Cancel tasks
+        for t in possible_tasks:
+            if t and not t.done():
+                t.cancel()
+        
+        # Force disconnect to unblock BLE tasks
+        if self._client.is_connected:
+            try:
+                await self._client.stop_notify(RX_UUID)
+                await self._client.disconnect()
+            except Exception as e:
+                logger.warning(f"Disconnect failed: {e}")
+        
+        # Wait for tasks to finish
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*[t for t in possible_tasks if t], return_exceptions=True),
+                timeout=3
+            )
+        except asyncio.TimeoutError:
+            logger.warning("Some internal tasks did not finish in time")
+
 
     # ------------------ PRIVATE METHODS ------------------
 
@@ -343,7 +359,6 @@ class RaysidClientAsync:
 
                 try:
                     self._process_packet(data)
-
                 except Exception:
                     logger.exception("Packet processing failed")
         except asyncio.CancelledError:
@@ -353,21 +368,48 @@ class RaysidClientAsync:
     def _process_packet(self, data: bytes):
         if len(data) < 2:
             return
+                
+        self.buf.extend(data)
 
-        pkt_type = data[1]
-        buf = np.frombuffer(data, dtype=np.uint8)
+        expected_len = int(self.buf[0])
+        if expected_len == 0: expected_len = 255 + 1
+        
+        while expected_len <= len(self.buf):
+            packet = bytes(self.buf[:expected_len + 1])
+            pkt_type = packet[1]
+            del self.buf[:expected_len + 1]
+            
+            buf = np.frombuffer(packet, dtype=np.uint8)
 
-        if pkt_type == 0x17:
-            self._handle_cps_packet(buf)
+            if pkt_type == 0x17:
+                self._handle_cps_packet(buf)
 
-        elif pkt_type == 0x02:
-            self._handle_status_packet(buf)
+            elif pkt_type == 0x02:
+                self._handle_status_packet(buf)
 
-        else:
-            self._handle_spectrum_packet(buf)
+            elif pkt_type in (0x30, 0x31, 0x32):
+                self._handle_spectrum_packet(buf)
+            
+            elif pkt_type == 0x01:
+                self._handle_meta_packet(packet)
+            elif pkt_type == 0x03:
+                logger.debug("0x03 packet")
+
+            elif pkt_type == 0x06:
+                logger.debug("0x06 packet")
+                
+            else:
+                logger.debug(f"Unknown packet type {pkt_type}")
+                self.buf.clear()
+                return
+            
+            if len(self.buf):
+                expected_len = int(self.buf[0])
+                if expected_len == 0: expected_len = 255 + 1
+            else:
+                break
 
 
-    
     def _handle_cps_packet(self, data: bytes):
         cps = decode_cps_packet(data)
 
@@ -378,7 +420,7 @@ class RaysidClientAsync:
             elif error_code == 2:
                 logger.debug("⚠️ No CPS returned, unknown error")
             else:
-                raise RuntimeError("CPS decode failed")
+                logger.debug("CPS decode failed")
 
         if cps[1] > 0 and cps[2] > 0:
             self._latest_cps = CurrentValuesPackage(
@@ -391,83 +433,37 @@ class RaysidClientAsync:
         ERR, UART_ERRORS, BATTERY, TEMPERATURE, TEMP_OK, CHARGING, CHANNEL_FULL, CH239, AVG_CH239 = range(9)
 
         if status[ERR] != 0:
-            raise RuntimeError("Status decode failed")
+            logger.debug("Status decode failed")
         # I dont like this :(
         if status[UART_ERRORS] == 0:
             self._latest_status = StatusPackage(
                 *status[BATTERY:], time.time()
             )
-    
+    #[ 15,   6, 103, 122,  92, 238,  15,   0,   0,   0,   0,   0, 137,  90, 122, 149] unknown packet :?
     def _handle_spectrum_packet(self, data: bytes):
-        if not hasattr(self, "_spectrum_chunks"):
-            self._spectrum_chunks = []
+        spectrum_result = decode_spectrum_packet(data)
 
-        pkt_type = data[1]
-        if pkt_type in (0x30, 0x31, 0x32) and len(data) > 7:
-            if len(self._spectrum_chunks) > 0:
-                packet = b"".join(self._spectrum_chunks)
-                packet = np.frombuffer(packet, dtype=np.uint8)
-                
-                total_bytes = np.uint16(packet[0])
+        error_code = spectrum_result[0]
+        if error_code == 0:
+            self._spectrum_accumulator.insert(*spectrum_result[1:])
+        elif error_code == 1:
+            logger.debug("Invalid spectrum packet")
+        elif error_code == 2:
+            logger.debug("Index error in X")
+        elif error_code == 3:
+            logger.debug("Index error in pos")
+            
+    def _handle_meta_packet(self, data:bytes):
+        result = decode_spectrum_meta_packet(data)
+        
+        if result[0] == 0:
+            self._spectrum_accumulator.update_meta(*result[1:])
+            return
+        elif result[0] == 1:
+            logger.debug("Invalid meta packet length")
+        elif result[0] == 2:
+            logger.debug("Overflow in meta packet")
 
-                if total_bytes == 0:
-                    total_bytes = 256
-                    
-
-                spectrum_packet = None
-                suffix_packet = None
-                if len(packet) > total_bytes + 1:
-                    suffix_packet = packet[total_bytes + 1:]
-                    spectrum_packet = packet[:total_bytes + 1]
-
-                else:
-                    spectrum_packet = packet
-
-                    
-                cps = spect_meta = None
-                if suffix_packet is not None:
-                    if suffix_packet[1] == 0x17 and len(suffix_packet) == 13:
-                        cps = suffix_packet
-                        
-                    elif suffix_packet[1] == 0x01 and len(suffix_packet) == 21:
-                        spect_meta = suffix_packet
-
-                    elif len(suffix_packet) == 44:
-                        spect_meta = suffix_packet[:-26]
-                        cps = suffix_packet[-13:]
-                    else:
-                        logger.debug("Unknown suffix packet recieved")
-                    
-                    if cps is not None and cps[1] == 0x17:
-                        self._handle_cps_packet(cps)
-                        
-                    if spect_meta is not None and spect_meta[1] == 0x01:
-                        meta_data = decode_spectrum_meta_packet(suffix_packet)
-                        if meta_data[0] == 0:
-                            self._spectrum_accumulator.update_meta(*meta_data[1:])
-                            
-                        else:
-                            logger.debug("Invalid length of meta packet")
-
-
-
-                spectrum_result = decode_spectrum_packet(spectrum_packet)
-                self._spectrum_chunks.clear()
-                self._spectrum_chunks.append(data)
-                error_code = spectrum_result[0]
-                if error_code == 0:
-                    self._spectrum_accumulator.insert(*spectrum_result[1:])
-                elif error_code == 1:
-                    logger.debug("Invalid spectrum packet")
-                elif error_code == 2:
-                    logger.debug("Index error in X")
-                elif error_code == 3:
-                    logger.debug("Index error in pos")
-            else:
-                self._spectrum_chunks.clear()
-                self._spectrum_chunks.append(data)
-        else:
-            self._spectrum_chunks.append(data)
                 
 
 

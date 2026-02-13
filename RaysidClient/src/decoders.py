@@ -256,7 +256,7 @@ def decode_cps_packet(data) -> tuple:
         return 2, 0, 0
     
 def decode_spectrum_meta_packet(data: np.ndarray):
-    if len(data) != 21:
+    if len(data) < 17:
         return 1, 0, 0, 0, 0
 
     spectrum_ticks = four_bytes_to_long(
@@ -274,6 +274,9 @@ def decode_spectrum_meta_packet(data: np.ndarray):
     highEnergyCounts = three_bytes_to_int(
         data[14], data[15], data[16]
     )
+    
+    if spectrum_ticks < 0 or uptime < 0:
+        return 2, 0, 0, 0, 0
 
     return 0, spectrum_ticks, uptime, energy, highEnergyCounts
     

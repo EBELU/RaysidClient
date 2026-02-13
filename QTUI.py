@@ -27,10 +27,16 @@ from matplotlib.widgets import RectangleSelector
 import matplotlib.pyplot as plt
 import logging
 
+raysid_logger.setLevel(logging.INFO)
+
+logging.basicConfig(
+    format="%(name)s - %(levelname)s: %(message)s"
+)
+
 
 # -------------------- UI LOGGER --------------------
-UI_logger = logging.getLogger("Interface")
-UI_logger.setLevel(logging.INFO)
+UI_logger = logging.getLogger("RaysidClient")
+UI_logger.setLevel(logging.DEBUG)
 
 class QTextEditLogger(logging.Handler):
     def __init__(self, text_edit):
