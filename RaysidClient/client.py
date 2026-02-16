@@ -19,6 +19,7 @@ from .src import (
     decode_spectrum_packet,
     decode_status_packet,
     decode_spectrum_meta_packet,
+    checksum_decode,
     CurrentValuesPackage,
     SpectrumResult,
     StatusPackage,
@@ -51,6 +52,7 @@ class RaysidClientAsync:
             self.name = address.name
         except AttributeError:
             self.name = "Raysid"
+            
         self._client = BleakClient(address, timeout=10, disconnected_callback=self._on_disconnect)
         
         self._latest_cps: CurrentValuesPackage | None = None
@@ -67,11 +69,10 @@ class RaysidClientAsync:
         self._rx_queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._rx_task: asyncio.Task | None = None
         self._reconnect_task: asyncio.Task | None = None
-        self._np_rx_buffer = np.empty(512, dtype=np.uint8) 
         self._ping_task: asyncio.Task | None = None
         self.active_tab = 1
         
-        self._spectrum_packet_buffer = None
+        self._spectrum_buffer: np.array = np.zeros(1800, dtype = np.float32)
         
         self.buf: bytearray = bytearray()
 
@@ -164,6 +165,7 @@ class RaysidClientAsync:
             except Exception as e:
                 logger.warning(f"Disconnect failed: {e}")
         
+        self._stopped=True
         # Wait for tasks to finish
         try:
             await asyncio.wait_for(
@@ -213,7 +215,8 @@ class RaysidClientAsync:
             while not self._stopped:
                 attempt += 1
                 if max_attempts and attempt > max_attempts:
-                    logger.error("❌ Maximum reconnection attempts reached!")
+                    logger.error("❌ Maximum reconnection attempts reached! Stopping client")
+                    self._stopped = True
                     break
 
                 logger.info(f"🔄 Attempting to reconnect to {self.device_name} (try {attempt})...")
@@ -314,7 +317,7 @@ class RaysidClientAsync:
 
             
     def send_packet(self, packet: bytes):
-        """Put a byte packet in to tx_queue
+        """Put a byte packet in to tx_queue. No need to await.
         """
         self._tx_queue.put_nowait(packet)
 
@@ -334,13 +337,10 @@ class RaysidClientAsync:
             pass
 
 
-    # ------------------ NOTIFICATION HANDLER ------------------
     def _handle_notification(self, _, data: bytearray):
         """
-        BLE callback — must be extremely fast.
         Just copy bytes and enqueue.
         """
-
         try:
             self._rx_queue.put_nowait(bytes(data))
         except asyncio.QueueFull:
@@ -366,14 +366,27 @@ class RaysidClientAsync:
             return
 
     def _process_packet(self, data: bytes):
+        
+        # Dispatch table
+        handlers = {
+                0x01: self._handle_meta_packet,
+                0x02: self._handle_status_packet,
+                0x17: self._handle_cps_packet,
+                0x30: self._handle_spectrum_packet,
+                0x31: self._handle_spectrum_packet,
+                0x32: self._handle_spectrum_packet,
+            }
+
+        # Logic
         if len(data) < 2:
             return
                 
         self.buf.extend(data)
 
-        expected_len = int(self.buf[0])
-        if expected_len == 0: expected_len = 255 + 1
-        
+        # Check expected length of spectrum packet
+        expected_len = int(self.buf[0]) or 256
+
+        # Packets can arrive so there are several packets in the buffer at the same time
         while expected_len <= len(self.buf):
             packet = bytes(self.buf[:expected_len + 1])
             pkt_type = packet[1]
@@ -381,39 +394,54 @@ class RaysidClientAsync:
             
             buf = np.frombuffer(packet, dtype=np.uint8)
 
-            if pkt_type == 0x17:
-                self._handle_cps_packet(buf)
+            if pkt_type in handlers:
+                handlers[pkt_type](buf)
 
-            elif pkt_type == 0x02:
-                self._handle_status_packet(buf)
-
-            elif pkt_type in (0x30, 0x31, 0x32):
-                self._handle_spectrum_packet(buf)
-            
-            elif pkt_type == 0x01:
-                self._handle_meta_packet(packet)
-            elif pkt_type == 0x03:
-                logger.debug("0x03 packet")
-
-            elif pkt_type == 0x06:
-                logger.debug("0x06 packet")
+            elif pkt_type in (0x03, 0x06):
+                # Dont know what these are
+                logger.debug(f"0x{pkt_type:02X} packet")
                 
             else:
                 logger.debug(f"Unknown packet type {pkt_type}")
-                self.buf.clear()
+                self.buf.clear() # Panic clean buffer to avoid blocking
                 return
             
             if len(self.buf):
-                expected_len = int(self.buf[0])
-                if expected_len == 0: expected_len = 255 + 1
+                expected_len = int(self.buf[0]) or 256
             else:
                 break
 
 
     def _handle_cps_packet(self, data: bytes):
-        cps = decode_cps_packet(data)
+        if len(data) < 6:
+            return
 
-        error_code = cps[0]
+        payload = data[1:-3]
+
+        calculated = checksum_decode(payload)
+        
+        calc_byte0 = (calculated >> 16) & 0xFF  # High
+        calc_byte1  = (calculated >> 8) & 0xFF  # Mid
+        # calc_byte2  = calculated & 0xFF       # Low, Unused
+
+        # Convert stored little-endian checksum to integer
+        exp_byte1 = data[-4]
+        exp_byte0 = data[-3]
+        
+        # Two byte comparison
+        if calc_byte0 != exp_byte0 or calc_byte1 != exp_byte1:
+            logger.debug(
+            f"Invalid CPS checksum: "
+            f"expected=[{exp_byte0:02X},{exp_byte1:02X}] "
+            f"calculated=[{calc_byte0:02X},{calc_byte1:02X}]"
+            )
+            return
+        
+        cps = decode_cps_packet(data)
+        
+        ERR, CPS, DR = range(3)
+
+        error_code = cps[ERR]
         if error_code:
             if error_code == 1:
                 logger.debug("⚠️ OVERLOAD — CPS not updated")
@@ -422,9 +450,9 @@ class RaysidClientAsync:
             else:
                 logger.debug("CPS decode failed")
 
-        if cps[1] > 0 and cps[2] > 0:
+        if cps[CPS] > 0 and cps[DR] > 0:
             self._latest_cps = CurrentValuesPackage(
-                cps[1], cps[2], time.time()
+                cps[CPS], cps[DR], time.time()
             )
             
     def _handle_status_packet(self, data: bytes):
@@ -434,14 +462,41 @@ class RaysidClientAsync:
 
         if status[ERR] != 0:
             logger.debug("Status decode failed")
-        # I dont like this :(
+
         if status[UART_ERRORS] == 0:
             self._latest_status = StatusPackage(
                 *status[BATTERY:], time.time()
             )
     #[ 15,   6, 103, 122,  92, 238,  15,   0,   0,   0,   0,   0, 137,  90, 122, 149] unknown packet :?
-    def _handle_spectrum_packet(self, data: bytes):
-        spectrum_result = decode_spectrum_packet(data)
+    def _handle_spectrum_packet(self, data: np.array):
+        """
+        Process a spectrum packet
+        
+        Packet structure [len][type][...data...][chk1][chk2][chk3][separator]
+        """
+        
+        # print(bytes(data).hex())
+        
+        if len(data) < 6:
+            return
+        if len(data) > 256: # Separator or someting
+            data = data[:256]
+        # Checksum is calculated over whole packet
+        payload = data[:-3]
+
+        calculated = checksum_decode(payload)
+
+        # Convert stored little-endian checksum to integer
+        checksum_bytes = data[-3:]
+        expected = np.uint32(checksum_bytes[0]) | (np.uint32(checksum_bytes[1]) << 8) | (np.uint32(checksum_bytes[2]) << 16)
+
+        if calculated != expected:
+            logger.debug(f"Invalid Spectrum checksum: expected=0x{expected:06X} calculated=0x{calculated:06X}")
+            return
+
+        
+        self._spectrum_buffer.fill(0)
+        spectrum_result = decode_spectrum_packet(data, self._spectrum_buffer)
 
         error_code = spectrum_result[0]
         if error_code == 0:
@@ -463,6 +518,8 @@ class RaysidClientAsync:
             logger.debug("Invalid meta packet length")
         elif result[0] == 2:
             logger.debug("Overflow in meta packet")
+            
+
 
                 
 

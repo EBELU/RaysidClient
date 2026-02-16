@@ -3,6 +3,19 @@ import numpy as np
 
 from .helpers import two_bytes_to_int, three_bytes_to_int, four_bytes_to_long,unpack_value
 
+def checksum_decode(data: np.array) -> np.uint32:
+    out = np.uint32(0)
+    length = data.shape[0]
+    i = 0
+    while i < length:
+        b0 = np.uint32(data[i]) if i < length else np.uint32(0)
+        b1 = np.uint32(data[i+1]) if i+1 < length else np.uint32(0)
+        b2 = np.uint32(data[i+2]) if i+2 < length else np.uint32(0)
+        value = (b0 << 16) | (b1 << 8) | b2
+        out ^= value
+        i += 3
+    return out & np.uint32(0xFFFFFF)
+
 # @njit(types.bool(types.uint16), cache=True, inline = "always")
 def check_X(X):
     if X >= 1800 or X < 0:
@@ -19,7 +32,7 @@ def check_pos(data_len, pos, max_incr):
         return False
 
 # @njit(boundscheck=True)
-def decode_spectrum_packet(data: np.array):
+def decode_spectrum_packet(data: np.array, spectrum: np.array):
     """
     Decodes spectrum packets
     
@@ -29,7 +42,6 @@ def decode_spectrum_packet(data: np.array):
     END_CH      = 2
     SPECTRUM    = 3
     """
-    spectrum = np.zeros(1800, dtype = np.float32)
     
     
     total_bytes = np.uint16(data[0])

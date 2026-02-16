@@ -11,7 +11,8 @@ from .decoders import (
     decode_cps_packet,
     decode_spectrum_packet,
     decode_status_packet,
-    decode_spectrum_meta_packet
+    decode_spectrum_meta_packet,
+    checksum_decode
 )
 
 from .data_classes import (
