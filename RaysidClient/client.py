@@ -472,27 +472,36 @@ class RaysidClientAsync:
         """
         Process a spectrum packet
         
-        Packet structure [len][type][...data...][chk1][chk2][chk3][separator]
+        Packet structure [len][type][...data...][chk1][chk2][chk3]
         """
         
         # print(bytes(data).hex())
+        raw_data = data.copy()
         
         if len(data) < 6:
             return
         if len(data) > 256: # Separator or someting
             data = data[:256]
         # Checksum is calculated over whole packet
-        payload = data[:-3]
+        for attempt in range(2): # Try the checksum twice
+            payload = data[:-3]
 
-        calculated = checksum_decode(payload)
+            calculated = checksum_decode(payload)
 
-        # Convert stored little-endian checksum to integer
-        checksum_bytes = data[-3:]
-        expected = np.uint32(checksum_bytes[0]) | (np.uint32(checksum_bytes[1]) << 8) | (np.uint32(checksum_bytes[2]) << 16)
+            # Convert stored little-endian checksum to integer
+            checksum_bytes = data[-3:]
+            expected = np.uint32(checksum_bytes[0]) | (np.uint32(checksum_bytes[1]) << 8) | (np.uint32(checksum_bytes[2]) << 16)
 
-        if calculated != expected:
-            logger.debug(f"Invalid Spectrum checksum: expected=0x{expected:06X} calculated=0x{calculated:06X}")
-            return
+            if calculated == expected:
+                # All good
+                break
+            elif calculated != expected and attempt == 0:
+                # Try again!
+                data = data[:-1]
+            else:
+                # Ok i guess it was wrong
+                logger.debug(f"Invalid Spectrum checksum: expected=0x{expected:06X} calculated=0x{calculated:06X}")
+                return
 
         
         self._spectrum_buffer.fill(0)

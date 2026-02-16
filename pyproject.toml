@@ -2,7 +2,6 @@
 requires = ["setuptools>=65", "wheel"]
 build-backend = "setuptools.build_meta"
 
-
 [project]
 name = "RaysidClient"
 version = "1.0.0"
@@ -20,5 +19,4 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-gui = ["pyside6>=6.6"]
-analysis = ["scipy>=1.11"]
+gui = ["pyside6>=6.6", "qasync", "scipy>=1.11"]
