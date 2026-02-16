@@ -1,4 +1,6 @@
 import numpy as np
+import matplotlib
+matplotlib.use("QtAgg")
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button
 import asyncio
@@ -117,6 +119,7 @@ if __name__ == "__main__":
     if not device:
         print("Device not found")
         sys.exit(1)
-
-    gui = SpectrumGUI(device.address)
-    plt.show()
+    try:
+        gui = SpectrumGUI(device.address)
+    except Exception as e:
+        print("GUI Error:", e)
