@@ -5,18 +5,6 @@ def long_to_bytes(l):
 
 
 def crc1(data: bytes) -> int:
-    """
-    Compute a 32-bit checksum for the given byte sequence.
-
-    The checksum is calculated by processing the data in 4-byte chunks,
-    interpreting each chunk as a little-endian integer, and summing the results.
-
-    Args:
-        data (bytes): The input byte sequence to compute the CRC for.
-
-    Returns:
-        int: The computed 32-bit checksum as an integer.
-    """
     CRC = 0
     for k in range(0, len(data), 4):
         rem = len(data)-k
@@ -32,17 +20,6 @@ def crc1(data: bytes) -> int:
 
 
 def crc2(data: bytes) -> int:
-    """
-    Compute an 8-bit XOR-based checksum for a given byte sequence.
-
-    Each byte in the data is XORed together, and the result is truncated to 8 bits.
-
-    Args:
-        data (bytes): The input byte sequence to compute the CRC for.
-
-    Returns:
-        int: The computed 8-bit checksum as an integer.
-    """
     out = 0
     for b in data:
         out ^= b
@@ -50,18 +27,6 @@ def crc2(data: bytes) -> int:
 
 
 def calculate_array_crc(data: bytes) -> int:
-    """
-    Compute a 32-bit checksum for a byte array, similar to `crc1`.
-
-    The array is processed in 4-byte chunks, summed together as little-endian integers.
-    Handles cases where the last chunk is less than 4 bytes.
-
-    Args:
-        data (bytes): The byte array to compute the checksum for.
-
-    Returns:
-        int: The resulting 32-bit checksum as an integer.
-    """
     crc = 0
     length = len(data)
 
@@ -98,7 +63,7 @@ def build_spectrum_request(start_ch=0, end_ch=1799):
 
     The packet includes:
     - Command byte (0x3E)
-    - Start and end channel (2 bytes each)
+    - Start and end channel
     - CRC1 (32-bit checksum over the payload)
     - CRC2 (8-bit XOR over the inner packet)
     - Header (0xFF) and length byte
@@ -156,6 +121,7 @@ def build_tx2_packet(data: bytes) -> bytes:
     return bytes(packet)
 
 def build_ping_packet(active_tab) -> bytes:
+    """Builds a package to ping the device, updates which active tab and keeps connection som timing out."""
     now_unix = int(time.time())
 
     data = bytearray(6)

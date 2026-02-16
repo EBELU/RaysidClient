@@ -1,0 +1,15 @@
+[project]
+name = "RaysidClient"
+version = "1.0.0"
+description = "Bluetooth client for connecting to a Raysid gamma spectrometer"
+requires-python = ">=3.10"
+
+dependencies = [
+    "bleak>=0.21",
+    "numpy>=1.26",
+    "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+gui = ["pyside6>=6.6"]
+analysis = ["scipy>=1.11"]

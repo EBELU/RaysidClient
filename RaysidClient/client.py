@@ -549,21 +549,47 @@ class RaysidClient:
         if not self._client or not self._loop:
             raise RuntimeError("Client not started")
 
-        async def wrapper():
-            await self._client.reset(Erange)
+        done = threading.Event()
+        error = []
 
-        fut = asyncio.run_coroutine_threadsafe(wrapper(), self._loop)
-        return fut.result(timeout=5)
+        def wrapper():
+            try:
+                self._client.reset(Erange)
+            except Exception as e:
+                error.append(e)
+            finally:
+                done.set()
+
+        self._loop.call_soon_threadsafe(wrapper)
+
+        if not done.wait(timeout=5):
+            raise TimeoutError("Reset timed out")
+
+        if error:
+            raise error[0]
 
     def set_active_tab(self, tab: int):
         if not self._client or not self._loop:
             raise RuntimeError("Client not started")
 
-        async def wrapper():
-            await self._client.set_active_tab(tab)
+        done = threading.Event()
+        error = []
 
-        fut = asyncio.run_coroutine_threadsafe(wrapper(), self._loop)
-        return fut.result(timeout=5)
+        def wrapper():
+            try:
+                self._client.set_active_tab(tab)
+            except Exception as e:
+                error.append(e)
+            finally:
+                done.set()
+
+        self._loop.call_soon_threadsafe(wrapper)
+
+        if not done.wait(timeout=5):
+            raise TimeoutError("set_active_tab timed out")
+
+        if error:
+            raise error[0]
 
     @property
     def LatestRealTimeData(self):

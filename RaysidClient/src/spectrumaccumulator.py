@@ -3,6 +3,7 @@ import numpy as np
 from .data_classes import SpectrumResult
 
 class SpectrumAccumulator:
+    """Class to handle spectrum information. Both channel counts and meta data."""
     def __init__(self, n_channels=1800):
         self.n = n_channels
         self.reset()
@@ -14,9 +15,7 @@ class SpectrumAccumulator:
         self.spectrum = np.zeros(self.n, dtype=np.float64)
 
     def insert(self, start_ch, end_ch, spectrum_chunk):
-        
-        mask = spectrum_chunk > ((1e3 + np.max(self.spectrum)) * 5)
-        spectrum_chunk = np.where(mask, self.spectrum, spectrum_chunk)
+        """Insert a decoded spectrum chunk"""
         
         if not ((start_ch == 0) and (end_ch == 0)):
             self.spectrum[start_ch:end_ch] = spectrum_chunk[start_ch:end_ch]
