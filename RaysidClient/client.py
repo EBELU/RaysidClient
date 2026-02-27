@@ -126,7 +126,7 @@ class RaysidClientAsync:
                 if not success:
                     logger.warning(f"❌ Connection attempt {connection_attempts}/5 failed! Retrying in 3s...")
                     await asyncio.sleep(3)
-                    if connection_attempts == 4:
+                    if connection_attempts == 5:
                         logger.critical("Connection failed")
                         await self.stop()
                         return
