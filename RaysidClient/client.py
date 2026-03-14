@@ -4,6 +4,7 @@ import platform
 import threading
 import contextlib
 import logging
+from enum import Enum, auto
 
 import numpy as np
 
@@ -40,9 +41,19 @@ _connect_lock = asyncio.Lock()  # ensures only one BLE connect/scan at a time
 class RaysidClientAsync:
     """
     Async implementation of the Raysid Client. Generally more stable and more responsive compared with the threaded version but async can be hassle.
-    
-    
     """
+    class ErrorFlags(Enum):
+        CLEAR = auto()
+        CONNECTION_FAILED = auto()
+        CONNECTION_TIMED_OUT = auto()
+        RECONNETING = auto()
+        
+        
+    class EnergyRange(Enum):
+        LOW = 8
+        MID = 4
+        HIGH = 2
+    
     def __init__(self, address, logger = None):
         
         self.logger = logger or logging.getLogger("RaysidClient")
@@ -63,6 +74,8 @@ class RaysidClientAsync:
         self._running = False
         self._disconnected = asyncio.Event()
         self._stopped = False
+        
+        self.error_flag = self.ErrorFlags.CLEAR
         
         self._tx_queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._tx_task: asyncio.Task | None = None
@@ -90,12 +103,13 @@ class RaysidClientAsync:
     def LatestSpectrum(self):
         return self._spectrum_accumulator.snapshot()
     
-    def reset(self, Erange = 4):
-        Erange = np.uint8(Erange)
+    def reset(self, Erange = EnergyRange.MID):
+        logger.debug(f"Reset with E_range {Erange}")
+        Erange = np.uint8(Erange.value)
         """
-        8 - switch to spectrum range 25..1000kev
-        4 - switch to spectrum range 30..2000kev
-        2 - switch to spectrum range 40..3500kev
+        LOW  - switch to spectrum range 25..1000kev
+        MID  - switch to spectrum range 30..2000kev
+        HIGH - switch to spectrum range 40..3500kev
         """
         if Erange not in [np.uint(2), np.uint8(4), np.uint(8)]:
             raise RuntimeError(f"Invalid energy range in reset, recieved range command {Erange}")
@@ -286,7 +300,7 @@ class RaysidClientAsync:
                     return False
 
             except BleakError as e:
-                logger.warning(f"❌ Bleak error during connect: {e}")
+                logger.debug(f"❌ Bleak error during connect: {e}")
                 return False
 
             except Exception as e:
@@ -402,7 +416,7 @@ class RaysidClientAsync:
                 logger.debug(f"0x{pkt_type:02X} packet")
                 
             else:
-                logger.debug(f"Unknown packet type {pkt_type}")
+                logger.debug(f"Unknown packet type {pkt_type} containing {bytes(packet).hex()}")
                 self.buf.clear() # Panic clean buffer to avoid blocking
                 return
             
@@ -467,7 +481,7 @@ class RaysidClientAsync:
             self._latest_status = StatusPackage(
                 *status[BATTERY:], time.time()
             )
-    #[ 15,   6, 103, 122,  92, 238,  15,   0,   0,   0,   0,   0, 137,  90, 122, 149] unknown packet :?
+
     def _handle_spectrum_packet(self, data: np.array):
         """
         Process a spectrum packet
@@ -475,8 +489,6 @@ class RaysidClientAsync:
         Packet structure [len][type][...data...][chk1][chk2][chk3]
         """
         
-        # print(bytes(data).hex())
-        raw_data = data.copy()
         
         if len(data) < 6:
             return
@@ -499,7 +511,7 @@ class RaysidClientAsync:
                 # Try again!
                 data = data[:-1]
             else:
-                # Ok i guess it was wrong
+                # Ok i guess it was wrongf
                 logger.debug(f"Invalid Spectrum checksum: expected=0x{expected:06X} calculated=0x{calculated:06X}")
                 return
 

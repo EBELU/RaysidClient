@@ -402,7 +402,7 @@ async def raysid_update_task(win: MainWindow):
 
     client = RaysidClientAsync(device)
     win.raysid = client
-    win.restAcc.connect(client.reset)
+    win.restAcc.connect(lambda : client.reset(RaysidClientAsync.EnergyRange.LOW))
     send_spect = False
     try:
         await client.start()
