@@ -15,7 +15,6 @@ readme = "README.md"
 dependencies = [
     "bleak>=0.21",
     "numpy>=1.26",
-    "matplotlib>=3.8",
 ]
 
 [project.optional-dependencies]
